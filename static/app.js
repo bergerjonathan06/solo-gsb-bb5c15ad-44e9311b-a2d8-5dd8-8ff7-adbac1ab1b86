@@ -432,22 +432,58 @@ $("btnCopy").onclick = async () => {
 };
 
 // ---------------------------------------------------------------------------
-// 历史
+// 历史 & 方案比较
 // ---------------------------------------------------------------------------
+const hist = { selected: [], items: [], compare: null };
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
 $("btnHistory").onclick = async () => {
+  showHistoryList();
   $("historyDialog").classList.add("open");
+  await loadHistory();
+};
+$("btnCloseHistory").onclick = () => $("historyDialog").classList.remove("open");
+
+function showHistoryList() {
+  $("compareView").style.display = "none";
+  $("historyList").style.display = "";
+  $("btnBackToList").style.display = "none";
+  $("historyBox").classList.remove("wide");
+}
+
+function showCompareView() {
+  $("historyList").style.display = "none";
+  $("compareView").style.display = "";
+  $("btnBackToList").style.display = "";
+  $("historyBox").classList.add("wide");
+}
+
+$("btnBackToList").onclick = () => { showHistoryList(); updateSelUI(); };
+
+async function loadHistory() {
   const resp = await fetch("/api/plans?limit=100");
   const data = await resp.json();
+  hist.items = data.items;
+  hist.selected = hist.selected.filter(
+    (id) => hist.items.some((it) => it.id === id)
+  );
   const box = $("historyList");
   box.innerHTML = "";
-  if (!data.items.length) { box.innerHTML = '<p class="muted">暂无保存的方案。</p>'; return; }
+  if (!data.items.length) { box.innerHTML = '<p class="muted">暂无保存的方案。</p>'; updateSelUI(); return; }
   data.items.forEach((it) => {
     const d = document.createElement("div");
-    d.className = "history-item";
+    d.className = "history-item" + (hist.selected.includes(it.id) ? " sel" : "");
     d.innerHTML = `
       <div>
-        <div>#${it.id} ${it.name} ${it.parent_id ? `<span class="small">(派生自 #${it.parent_id})</span>` : ""}</div>
-        <div class="small">${new Date(it.created_at).toLocaleString()} ·
+        <div><input type="checkbox" class="cmpchk" data-id="${it.id}"
+            ${hist.selected.includes(it.id) ? "checked" : ""}>
+          #${it.id} ${esc(it.name)}
+          ${it.parent_id ? `<span class="small">(派生自 #${it.parent_id})</span>` : ""}</div>
+        <div class="small" style="margin-left:22px">${new Date(it.created_at).toLocaleString()} ·
           U₁=${fmt(it.u1_mag_g_mm)} g·mm · U₂=${fmt(it.u2_mag_g_mm)} · 评级 ${it.grade} · F=${fmt(it.centrifugal_force_n, 2)}N</div>
       </div>
       <div class="rowline">
@@ -455,17 +491,248 @@ $("btnHistory").onclick = async () => {
         <button class="iconbtn" data-a="export">导出</button>
         <button class="iconbtn" data-a="del">删除</button>
       </div>`;
+    d.querySelector(".cmpchk").onchange = (e) => {
+      const id = it.id;
+      if (e.target.checked) {
+        if (hist.selected.length >= 2) {
+          toast("最多选择两条方案进行比较。", true);
+          e.target.checked = false;
+          return;
+        }
+        if (!hist.selected.includes(id)) hist.selected.push(id);
+      } else {
+        hist.selected = hist.selected.filter((x) => x !== id);
+      }
+      d.classList.toggle("sel", e.target.checked);
+      updateSelUI();
+    };
     d.querySelector('[data-a="load"]').onclick = () => loadPlan(it.id);
     d.querySelector('[data-a="export"]').onclick = () => { window.location = `/api/plan/${it.id}/export`; };
     d.querySelector('[data-a="del"]').onclick = async () => {
       if (!confirm(`删除方案 #${it.id}?`)) return;
       await fetch(`/api/plan/${it.id}`, { method: "DELETE" });
-      $("btnHistory").click();
+      await loadHistory();
     };
     box.appendChild(d);
   });
+  updateSelUI();
+}
+
+function updateSelUI() {
+  const n = hist.selected.length;
+  $("btnCompareSel").disabled = n !== 2;
+  $("btnCompareSel").textContent = `比较所选方案 (${n}/2)`;
+  $("btnClearSel").disabled = n === 0;
+  $("cmpSelHint").textContent = n === 1 ? "再勾选一条方案" : "";
+}
+
+$("btnClearSel").onclick = () => {
+  hist.selected = [];
+  document.querySelectorAll(".cmpchk").forEach((c) => (c.checked = false));
+  document.querySelectorAll(".history-item.sel").forEach((el) => el.classList.remove("sel"));
+  updateSelUI();
 };
-$("btnCloseHistory").onclick = () => $("historyDialog").classList.remove("open");
+
+$("btnCompareSel").onclick = async () => {
+  if (hist.selected.length !== 2) return;
+  const [a, b] = hist.selected;
+  try {
+    const resp = await fetch(`/api/plans/compare?a=${a}&b=${b}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "比较失败");
+    hist.compare = data;
+    renderCompare(data);
+    showCompareView();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// 比较视图
+// ---------------------------------------------------------------------------
+function vfmt(x, d = 2) {
+  if (x === null || x === undefined) return "–";
+  return fmt(x, d);
+}
+
+function whoHtml(side, w) {
+  return `<div class="who ${side}">
+    <div class="ttl"><span class="pill ${side === "a" ? "mv" : "add"}">${side === "a" ? "方案 A" : "方案 B"}</span>
+      #${w.id} ${esc(w.name)}</div>
+    <div class="small">${new Date(w.created_at).toLocaleString()} · ${w.total_tubes ?? "–"} 支试管
+      ${w.incremental ? '<span class="pill move">增量重排</span>' : ""}</div>
+  </div>`;
+}
+
+function renderCompare(c) {
+  const box = $("compareView");
+  box.innerHTML = "";
+
+  const head = document.createElement("div");
+  head.className = "cmp-head";
+  head.innerHTML = whoHtml("a", c.a) +
+    '<div class="vs"><button id="btnSwapAB" class="iconbtn" title="交换 A/B">⇄ 交换</button><br>差值<br>B − A</div>' +
+    whoHtml("b", c.b);
+  box.appendChild(head);
+  box.appendChild(bannerHtml(c));
+
+  box.appendChild(secTitle("指标对比(一阶 / 二阶不平衡量等)"));
+  const mt = document.createElement("table");
+  mt.className = "cmp table";
+  mt.innerHTML = `<thead><tr><th>指标</th><th style="text-align:right">方案 A</th>
+    <th style="text-align:right">方案 B</th><th style="text-align:right">差值 Δ(B−A)</th></tr></thead>`;
+  const tb = document.createElement("tbody");
+  c.metrics.forEach((m) => tb.appendChild(metricRow(m, c.same_conditions)));
+  mt.appendChild(tb);
+  box.appendChild(mt);
+
+  box.appendChild(secTitle("摆放明细(按试管编号合并)"));
+  const legend = document.createElement("div");
+  legend.className = "cmp-legend";
+  legend.innerHTML = `
+    <span class="pill add">新增</span><span class="small">仅方案 B 中有</span>
+    <span class="pill rm">移除</span><span class="small">仅方案 A 中有</span>
+    <span class="pill mv">换槽</span><span class="small">槽位变化</span>
+    <span class="pill same">未变</span><span class="small">槽位相同</span>`;
+  box.appendChild(legend);
+  const counts = c.counts;
+  const sum = document.createElement("div");
+  sum.className = "small";
+  sum.innerHTML = `共 ${counts.total} 个试管编号: 新增 <b style="color:var(--acc2)">${counts.added}</b> ·
+    移除 <b style="color:var(--bad)">${counts.removed}</b> ·
+    换槽 <b style="color:var(--warn)">${counts.moved}</b> ·
+    未变 <b>${counts.unchanged}</b>` +
+    (counts.mass_changed ? ` · <b style="color:var(--warn)">${counts.mass_changed} 支质量改变</b>` : "") +
+    (counts.lock_changed ? ` · <b style="color:var(--lock)">${counts.lock_changed} 支锁定状态改变</b>` : "");
+  box.appendChild(sum);
+
+  const wrap = document.createElement("div");
+  wrap.className = "cmp-table-wrap";
+  const tt = document.createElement("table");
+  tt.className = "cmp table";
+  tt.innerHTML = `<thead><tr><th>试管</th><th>质量 A/B (g)</th>
+    <th style="text-align:right">槽位 A</th><th style="text-align:right">槽位 B</th>
+    <th style="text-align:right">角度 A/B</th><th>状态</th></tr></thead>`;
+  const ttb = document.createElement("tbody");
+  c.tube_changes.forEach((r) => ttb.appendChild(changeRow(r)));
+  tt.appendChild(ttb);
+  wrap.appendChild(tt);
+  box.appendChild(wrap);
+
+  box.appendChild(secTitle("参数差异(转子 / 运行 / 求解输入)"));
+  box.appendChild(paramTable(c));
+
+  $("btnSwapAB").onclick = async () => {
+    [hist.selected[0], hist.selected[1]] = [hist.selected[1], hist.selected[0]];
+    const [a, b] = hist.selected;
+    const resp = await fetch(`/api/plans/compare?a=${a}&b=${b}`);
+    const data = await resp.json();
+    if (!resp.ok) { toast(data.detail || "比较失败", true); return; }
+    hist.compare = data;
+    renderCompare(data);
+  };
+}
+
+function secTitle(text) {
+  const d = document.createElement("div");
+  d.className = "cmpsec";
+  d.textContent = text;
+  return d;
+}
+
+function bannerHtml(c) {
+  const d = document.createElement("div");
+  if (c.same_conditions) {
+    d.className = "cmp-banner ok";
+    d.innerHTML = `<div class="wh">✓ 同条件比较</div>${esc(c.interpretation)}`;
+    return d;
+  }
+  d.className = "cmp-banner warn";
+  d.innerHTML = `<div class="wh">⚠ 输入条件不一致 — 指标差值不是同条件优化结论</div>
+    <div>${esc(c.interpretation)}</div>
+    <ul>${c.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>`;
+  return d;
+}
+
+function metricRow(m, sameConditions) {
+  const tr = document.createElement("tr");
+  const isMag = m.key.includes("mag") || m.key.includes("force") ||
+    m.key.includes("moment") || m.key.includes("eccentricity");
+  let deltaHtml;
+  if (m.delta === null || m.delta === undefined) {
+    deltaHtml = '<span class="delta-flat">–</span>';
+  } else if (Math.abs(m.delta) < 1e-9) {
+    deltaHtml = '<span class="delta-flat">0</span>';
+  } else {
+    const sign = m.delta > 0 ? "+" : "";
+    let cls = "delta-flat";
+    // 仅同条件下, 幅值/力/矩/偏心类指标的下降才明确代表"更优"
+    if (sameConditions && isMag) cls = m.delta < 0 ? "delta-good" : "delta-bad";
+    deltaHtml = `<span class="${cls}">${sign}${vfmt(m.delta, m.unit === "N·m" ? 4 : 2)}<span class="unit">${m.unit ?? ""}</span></span>`;
+  }
+  const cell = (v) => `${vfmt(v, m.unit === "N·m" ? 4 : 2)}<span class="unit">${m.unit ?? ""}</span>`;
+  tr.innerHTML = `<td>${m.label}</td><td class="a">${cell(m.a)}</td>
+    <td class="b">${cell(m.b)}</td><td class="dv">${deltaHtml}</td>`;
+  return tr;
+}
+
+const STATUS_PILL = {
+  added: ['<span class="pill add">新增</span>', "cmprow-added"],
+  removed: ['<span class="pill rm">移除</span>', "cmprow-removed"],
+  moved: ['<span class="pill mv">换槽</span>', "cmprow-moved"],
+  unchanged: ['<span class="pill same">未变</span>', ""],
+};
+
+function changeRow(r) {
+  const tr = document.createElement("tr");
+  const [pill, rowCls] = STATUS_PILL[r.status];
+  if (rowCls) tr.classList.add(rowCls);
+  const massCell = r.mass_changed
+    ? `<span style="color:var(--warn)">${vfmt(r.mass_a, 1)} → ${vfmt(r.mass_b, 1)}</span>`
+    : vfmt(r.mass_b ?? r.mass_a, 1);
+  const lockNote = r.lock_changed
+    ? ' <span class="pill lock" title="锁定状态变化">锁变</span>' : "";
+  const angCell = (a, b) => {
+    if (a === null && b === null) return "–";
+    if (a === null || b === null) return `${vfmt(a ?? b, 1)}°`;
+    return `${vfmt(a, 1)}° / ${vfmt(b, 1)}°`;
+  };
+  tr.innerHTML = `
+    <td>${r.tube_id}${lockNote}</td>
+    <td>${massCell}</td>
+    <td class="a">${r.slot_a ?? "—"}</td>
+    <td class="b">${r.slot_b ?? "—"}</td>
+    <td class="dv">${angCell(r.angle_a, r.angle_b)}</td>
+    <td>${pill}</td>`;
+  return tr;
+}
+
+function paramTable(c) {
+  const t = document.createElement("table");
+  t.className = "cmp table";
+  t.innerHTML = `<thead><tr><th>类别</th><th>参数</th>
+    <th style="text-align:right">方案 A</th><th style="text-align:right">方案 B</th><th>状态</th></tr></thead>`;
+  const tb = document.createElement("tbody");
+  c.param_diffs.forEach((e) => {
+    const tr = document.createElement("tr");
+    const val = (x) => {
+      if (x === null || x === undefined) return "–";
+      if (typeof x === "number") return x;
+      return esc(String(x));
+    };
+    tr.innerHTML = `<td class="small">${c.group_labels[e.group] || e.group}</td>
+      <td>${esc(e.label)}</td>
+      <td class="a">${val(e.a)}${e.unit ? `<span class="unit"> ${e.unit}</span>` : ""}</td>
+      <td class="b">${val(e.b)}${e.unit ? `<span class="unit"> ${e.unit}</span>` : ""}</td>
+      <td class="dv">${e.differs
+        ? '<span class="param-diff">不同</span>'
+        : '<span class="param-same">一致</span>'}</td>`;
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb);
+  return t;
+}
 
 async function loadPlan(id) {
   const resp = await fetch(`/api/plan/${id}`);

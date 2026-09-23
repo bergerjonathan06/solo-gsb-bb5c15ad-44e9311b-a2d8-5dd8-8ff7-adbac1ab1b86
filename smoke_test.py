@@ -173,14 +173,20 @@ def find(method, path):
     return None
 
 def call(method, path, body=None):
-    r = find(method,path)
+    raw_path, _, query = path.partition("?")
+    r = find(method, raw_path)
     if isinstance(r, tuple): fn, args = r
     else: fn, args = r, ()
+    kwargs = {}
+    if query:
+        from urllib.parse import parse_qs
+        for k, vs in parse_qs(query).items():
+            kwargs[k] = int(vs[0]) if vs[0].lstrip("-").isdigit() else vs[0]
     if body is not None:
         model_cls = main.PlanRequest
         req = _build_concrete(model_cls, body)
         return fn(req)
-    return fn(*args)
+    return fn(*args, **kwargs)
 
 def _build_concrete(cls, data):
     """根据 main.py 中具体 Pydantic 模型做嵌套转换。"""
@@ -254,9 +260,55 @@ rec2=call("POST","/api/plan",inc)
 print("plan#2 incremental U1=%.2f moved=%s" % (
     rec2["result"]["metrics"]["u1_mag_g_mm"], rec2["result"]["moved_tube_ids"]))
 
+# ---- 方案对比 ----
+cmp12=call("GET","/api/plans/compare?a=1&b=2")
+assert cmp12["a"]["id"]==1 and cmp12["b"]["id"]==2
+assert not cmp12["same_conditions"]
+assert cmp12["condition_flags"]["same_rotor"]
+assert not cmp12["condition_flags"]["same_tubes"]
+row7=next(r for r in cmp12["tube_changes"] if r["tube_id"]==7)
+assert row7["status"]=="added" and row7["slot_a"] is None
+assert cmp12["counts"]["added"]==1
+# 指标差值 = B - A
+for m in cmp12["metrics"]:
+    if not m["is_angle"]:
+        assert abs(m["delta"]-(m["b"]-m["a"]))<1e-6
+assert any("试管清单不同" in w for w in cmp12["warnings"])
+assert cmp12["b"]["incremental"] is True
+
+# 不同转速: 布局/U1 不变, 但离心合力差值不为零 → 必须给转速警告
+diff_rpm=dict(req_body); diff_rpm["name"]="不同转速"; diff_rpm["rpm"]=6000
+rec3=call("POST","/api/plan",diff_rpm)
+cmp13=call("GET","/api/plans/compare?a=1&b=3")
+assert cmp13["condition_flags"]["same_tubes"]
+assert not cmp13["condition_flags"]["same_runtime"]
+assert any("转速不同" in w for w in cmp13["warnings"])
+u1d=next(m for m in cmp13["metrics"] if m["key"]=="u1_mag_g_mm")
+fd=next(m for m in cmp13["metrics"] if m["key"]=="centrifugal_force_n")
+assert abs(u1d["delta"])<1e-6 and abs(fd["delta"])>1e-6
+
+# 同条件对比(完全相同输入): 无警告, 全部未变
+same=dict(req_body); same["name"]="同条件副本"
+rec4=call("POST","/api/plan",same)
+cmp14=call("GET","/api/plans/compare?a=1&b=4")
+assert cmp14["same_conditions"] and cmp14["warnings"]==[]
+assert cmp14["counts"]["unchanged"]==6 and cmp14["counts"]["moved"]==0
+
+# 同一方案 400 / 不存在 404
+try:
+    call("GET","/api/plans/compare?a=1&b=1"); raise SystemExit("should 400")
+except main.HTTPException as e:
+    assert e.status_code==400
+try:
+    call("GET","/api/plans/compare?a=1&b=999"); raise SystemExit("should 404")
+except main.HTTPException as e:
+    assert e.status_code==404
+print("compare OK: added=%d moved=%d warnings=%d" % (
+    cmp12["counts"]["added"], cmp12["counts"]["moved"], len(cmp12["warnings"])))
+
 # 列表 / 详情 / 导出 / 删除
 lst=call("GET","/api/plans")
-assert len(lst["items"])==2
+assert len(lst["items"])==4
 detail=call("GET","/api/plan/2")
 assert detail["result"]["total_tubes"]==7
 exp=call("GET","/api/plan/2/export")

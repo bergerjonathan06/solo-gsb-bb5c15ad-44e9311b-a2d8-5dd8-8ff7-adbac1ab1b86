@@ -93,9 +93,44 @@ th{color:var(--mut);font-weight:500}
 .dialog.open{display:flex}
 .dialog .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;width:min(560px,92vw);
   max-height:84vh;overflow:auto}
+.dialog .box.wide{width:min(960px,96vw)}
 .history-item{display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid var(--line);gap:8px}
 .history-item:hover{background:var(--panel2)}
+.history-item.sel{background:var(--panel2);box-shadow:inset 3px 0 0 var(--acc)}
+.history-item input[type=checkbox]{width:auto;margin-right:6px;cursor:pointer}
 .small{font-size:11.5px;color:var(--mut)}
+/* 方案比较 */
+.cmp-head{display:grid;grid-template-columns:1fr 70px 1fr;gap:8px;align-items:center;margin-bottom:10px}
+.cmp-head .who{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px}
+.cmp-head .who.a{border-color:var(--acc)}
+.cmp-head .who.b{border-color:var(--acc2)}
+.cmp-head .who .ttl{font-weight:600;margin-bottom:3px}
+.cmp-head .vs{text-align:center;color:var(--mut);font-size:12px}
+.cmp-banner{border-radius:9px;padding:9px 12px;font-size:12.5px;line-height:1.55;margin:10px 0}
+.cmp-banner.ok{background:#0f2e1f;border:1px solid var(--acc2);color:#bbf7d0}
+.cmp-banner.warn{background:#3a2a0c;border:1px solid var(--warn);color:#fde68a}
+.cmp-banner .wh{font-weight:700;margin-bottom:3px}
+.cmp-banner ul{margin:5px 0 0;padding-left:18px}
+table.cmp{font-size:12.5px}
+table.cmp td.a,table.cmp td.b,table.cmp td.dv{text-align:right;white-space:nowrap}
+table.cmp td.dv{color:var(--mut)}
+table.cmp td .unit{color:var(--mut);font-size:11px;margin-left:2px}
+.delta-good{color:var(--acc2);font-weight:600}
+.delta-bad{color:var(--bad);font-weight:600}
+.delta-flat{color:var(--mut)}
+.pill.add{color:var(--acc2);border-color:var(--acc2)}
+.pill.rm{color:var(--bad);border-color:var(--bad)}
+.pill.mv{color:var(--warn);border-color:var(--warn)}
+.pill.same{color:var(--mut);border-color:var(--line)}
+tr.cmprow-added td{background:rgba(54,211,153,.07)}
+tr.cmprow-removed td{background:rgba(248,114,114,.07)}
+tr.cmprow-moved td{background:rgba(251,189,35,.07)}
+.cmpsec{margin:16px 0 6px;font-size:13px;font-weight:600}
+.cmp-table-wrap{max-height:46vh;overflow:auto}
+.param-diff{color:var(--bad);font-weight:600}
+.param-same{color:var(--mut)}
+.cmp-legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--mut);margin:6px 0}
+.cmp-legend .pill{cursor:default}
 @media(max-width:1080px){.wrap{grid-template-columns:1fr}.result{grid-template-columns:1fr}}
 </style>
 </head>
@@ -232,10 +267,18 @@ th{color:var(--mut);font-weight:500}
 </div>
 
 <div id="historyDialog" class="dialog">
-  <div class="box">
+  <div class="box" id="historyBox">
     <div class="rowline"><h2 style="margin:0">历史方案</h2><div style="flex:1"></div>
+      <button id="btnBackToList" class="ghost" style="display:none">← 返回列表</button>
       <button id="btnCloseHistory" class="ghost">关闭</button></div>
-    <div id="historyList" style="margin-top:10px"></div>
+    <div class="small" style="margin-top:6px">勾选两条已保存方案后点“比较所选方案”; 也可直接载入、导出或删除单条方案。</div>
+    <div class="rowline" style="margin:8px 0">
+      <button id="btnCompareSel" class="primary" disabled>比较所选方案 (0/2)</button>
+      <button id="btnClearSel" class="ghost" disabled>清除勾选</button>
+      <span class="small" id="cmpSelHint"></span>
+    </div>
+    <div id="historyList"></div>
+    <div id="compareView" style="display:none"></div>
   </div>
 </div>
 
