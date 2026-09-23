@@ -95,8 +95,28 @@ th{color:var(--mut);font-weight:500}
   max-height:84vh;overflow:auto}
 .history-item{display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid var(--line);gap:8px}
 .history-item:hover{background:var(--panel2)}
+.history-item.selected{background:var(--panel2);box-shadow:inset 3px 0 0 var(--acc)}
+.history-item input[type=checkbox]{width:auto;margin-right:4px}
 .small{font-size:11.5px;color:var(--mut)}
-@media(max-width:1080px){.wrap{grid-template-columns:1fr}.result{grid-template-columns:1fr}}
+.dialog .box.wide{width:min(960px,95vw)}
+.cmp-warn{background:#3a2a12;border:1px solid var(--warn);color:#fde68a;border-radius:8px;
+  padding:9px 12px;font-size:12.5px;line-height:1.5;margin:8px 0}
+.cmp-ok{background:#10331f;border:1px solid var(--acc2);color:#bbf7d0;border-radius:8px;
+  padding:9px 12px;font-size:12.5px;margin:8px 0}
+.cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.cmp-col h3{font-size:13px;margin:0 0 6px;color:var(--acc)}
+.cmp-col h3.b{color:var(--acc2)}
+.cmp-table td:nth-child(2),.cmp-table td:nth-child(3),.cmp-table td:nth-child(4){text-align:right}
+.delta-up{color:var(--bad);font-weight:600}
+.delta-down{color:var(--acc2);font-weight:600}
+.delta-flat{color:var(--mut)}
+.status-tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line);white-space:nowrap}
+.st-added{color:var(--acc2);border-color:var(--acc2)}
+.st-removed{color:var(--bad);border-color:var(--bad)}
+.st-moved{color:var(--warn);border-color:var(--warn)}
+.st-unchanged{color:var(--mut)}
+.diff-group-title{font-size:12.5px;color:var(--warn);margin:10px 0 2px;font-weight:600}
+@media(max-width:1080px){.wrap{grid-template-columns:1fr}.result{grid-template-columns:1fr}.cmp-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -235,7 +255,19 @@ th{color:var(--mut);font-weight:500}
   <div class="box">
     <div class="rowline"><h2 style="margin:0">历史方案</h2><div style="flex:1"></div>
       <button id="btnCloseHistory" class="ghost">关闭</button></div>
-    <div id="historyList" style="margin-top:10px"></div>
+    <div class="rowline" style="margin:8px 0">
+      <button id="btnCompare" disabled>比较选中的两条方案</button>
+      <span class="small" id="compareHint">勾选两条方案后可并排比较摆放明细与不平衡量。</span>
+    </div>
+    <div id="historyList" style="margin-top:4px"></div>
+  </div>
+</div>
+
+<div id="compareDialog" class="dialog">
+  <div class="box wide">
+    <div class="rowline"><h2 style="margin:0">方案比较</h2><div style="flex:1"></div>
+      <button id="btnCloseCompare" class="ghost">关闭</button></div>
+    <div id="compareBody" style="margin-top:8px"></div>
   </div>
 </div>
 

@@ -160,6 +160,7 @@ for f in app.startup: f()
 
 def find(method, path):
     import re
+    path = path.split("?", 1)[0]
     for m,p,fn in app.routes:
         if m!=method: continue
         # 把 {param} 转为单段正则([^/]+)
@@ -173,9 +174,16 @@ def find(method, path):
     return None
 
 def call(method, path, body=None):
+    raw_query = path.split("?", 1)[1] if "?" in path else ""
     r = find(method,path)
     if isinstance(r, tuple): fn, args = r
     else: fn, args = r, ()
+    if raw_query:
+        import urllib.parse
+        qargs = {}
+        for k, v in urllib.parse.parse_qsl(raw_query):
+            qargs[k] = int(v) if v.lstrip("-").isdigit() else v
+        args = tuple(qargs.get(p) for p in fn.__code__.co_varnames[:fn.__code__.co_argcount])
     if body is not None:
         model_cls = main.PlanRequest
         req = _build_concrete(model_cls, body)
@@ -254,9 +262,51 @@ rec2=call("POST","/api/plan",inc)
 print("plan#2 incremental U1=%.2f moved=%s" % (
     rec2["result"]["metrics"]["u1_mag_g_mm"], rec2["result"]["moved_tube_ids"]))
 
+# 方案比较
+cmp12 = call("GET", "/api/plans/compare?a=1&b=2")
+assert cmp12["plan_a"]["id"] == 1 and cmp12["plan_b"]["id"] == 2
+# plan#2 比 plan#1 多一支试管 -> 有 1 条 added, 无 removed
+assert cmp12["placement_counts"]["added"] == 1, cmp12["placement_counts"]
+added = [r for r in cmp12["placements"] if r["status"] == "added"]
+assert added and added[0]["tube_id"] == 7
+# 试管清单不同 -> 非同条件, 必须在参数差异中体现
+assert cmp12["same_conditions"] is False
+assert "tubes" in cmp12["differing_groups"]
+# 指标并列含一阶/二阶模值与角度, 差值为 B-A
+um = {x["key"]: x for x in cmp12["metrics"]}
+assert set(("u1_mag_g_mm", "u2_mag_g_mm", "u1_angle_deg", "u2_angle_deg")) <= set(um)
+assert abs(um["u1_mag_g_mm"]["delta_b_minus_a"]
+           - (rec2["result"]["metrics"]["u1_mag_g_mm"]
+              - rec["result"]["metrics"]["u1_mag_g_mm"])) < 1e-6
+print("compare added/diff-condition OK")
+
+# 同条件比较: 用相同输入再求解保存一份(plan#3)
+same = dict(req_body); same["name"] = "同条件副本"
+rec3 = call("POST", "/api/plan", same)
+cmp13 = call("GET", "/api/plans/compare?a=1&b=3")
+assert cmp13["same_conditions"] is True, cmp13["differing_groups"]
+assert not cmp13["input_diff"]["rotor"]
+assert not cmp13["input_diff"]["solver"]
+assert not cmp13["input_diff"]["tubes"]
+assert all(r["status"] == "unchanged" for r in cmp13["placements"])
+assert all(abs(r["delta_b_minus_a"]) < 1e-9
+           for r in cmp13["metrics"] if not r["is_angle"])
+print("compare same-conditions OK")
+
+# a==b 拒绝; 不存在 404
+try:
+    call("GET", "/api/plans/compare?a=1&b=1"); raise SystemExit("should 400")
+except main.HTTPException as e:
+    assert e.status_code == 400
+try:
+    call("GET", "/api/plans/compare?a=1&b=999"); raise SystemExit("should 404")
+except main.HTTPException as e:
+    assert e.status_code == 404
+print("compare validation OK")
+
 # 列表 / 详情 / 导出 / 删除
 lst=call("GET","/api/plans")
-assert len(lst["items"])==2
+assert len(lst["items"])==3
 detail=call("GET","/api/plan/2")
 assert detail["result"]["total_tubes"]==7
 exp=call("GET","/api/plan/2/export")

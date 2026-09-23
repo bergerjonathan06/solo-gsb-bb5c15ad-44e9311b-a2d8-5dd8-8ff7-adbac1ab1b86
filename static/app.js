@@ -434,8 +434,24 @@ $("btnCopy").onclick = async () => {
 // ---------------------------------------------------------------------------
 // 历史
 // ---------------------------------------------------------------------------
+const historySel = new Set();
+
+function syncCompareButton() {
+  const btn = $("btnCompare");
+  btn.disabled = historySel.size !== 2;
+  $("compareHint").textContent = historySel.size === 0
+    ? "勾选两条方案后可并排比较摆放明细与不平衡量。"
+    : `已选 ${historySel.size} 条(需恰好 2 条)。`;
+}
+
 $("btnHistory").onclick = async () => {
+  historySel.clear();
+  syncCompareButton();
   $("historyDialog").classList.add("open");
+  await renderHistory();
+};
+
+async function renderHistory() {
   const resp = await fetch("/api/plans?limit=100");
   const data = await resp.json();
   const box = $("historyList");
@@ -443,29 +459,167 @@ $("btnHistory").onclick = async () => {
   if (!data.items.length) { box.innerHTML = '<p class="muted">暂无保存的方案。</p>'; return; }
   data.items.forEach((it) => {
     const d = document.createElement("div");
-    d.className = "history-item";
+    d.className = "history-item" + (historySel.has(it.id) ? " selected" : "");
+    const checked = historySel.has(it.id) ? "checked" : "";
     d.innerHTML = `
-      <div>
-        <div>#${it.id} ${it.name} ${it.parent_id ? `<span class="small">(派生自 #${it.parent_id})</span>` : ""}</div>
-        <div class="small">${new Date(it.created_at).toLocaleString()} ·
-          U₁=${fmt(it.u1_mag_g_mm)} g·mm · U₂=${fmt(it.u2_mag_g_mm)} · 评级 ${it.grade} · F=${fmt(it.centrifugal_force_n, 2)}N</div>
+      <div class="rowline">
+        <input type="checkbox" title="加入比较" ${checked}>
+        <div>
+          <div>#${it.id} ${it.name} ${it.parent_id ? `<span class="small">(派生自 #${it.parent_id})</span>` : ""}</div>
+          <div class="small">${new Date(it.created_at).toLocaleString()} ·
+            U₁=${fmt(it.u1_mag_g_mm)} g·mm · U₂=${fmt(it.u2_mag_g_mm)} · 评级 ${it.grade} · F=${fmt(it.centrifugal_force_n, 2)}N</div>
+        </div>
       </div>
       <div class="rowline">
         <button class="iconbtn" data-a="load">载入</button>
         <button class="iconbtn" data-a="export">导出</button>
         <button class="iconbtn" data-a="del">删除</button>
       </div>`;
+    const cb = d.querySelector('input[type="checkbox"]');
+    cb.onclick = (e) => e.stopPropagation();
+    cb.onchange = () => {
+      if (cb.checked) {
+        if (historySel.size >= 2) { cb.checked = false; toast("最多选择两条方案进行比较。", true); return; }
+        historySel.add(it.id);
+      } else {
+        historySel.delete(it.id);
+      }
+      d.classList.toggle("selected", cb.checked);
+      syncCompareButton();
+    };
     d.querySelector('[data-a="load"]').onclick = () => loadPlan(it.id);
     d.querySelector('[data-a="export"]').onclick = () => { window.location = `/api/plan/${it.id}/export`; };
     d.querySelector('[data-a="del"]').onclick = async () => {
       if (!confirm(`删除方案 #${it.id}?`)) return;
       await fetch(`/api/plan/${it.id}`, { method: "DELETE" });
-      $("btnHistory").click();
+      historySel.delete(it.id);
+      syncCompareButton();
+      renderHistory();
     };
     box.appendChild(d);
   });
-};
+}
 $("btnCloseHistory").onclick = () => $("historyDialog").classList.remove("open");
+
+// ---------------------------------------------------------------------------
+// 方案比较
+// ---------------------------------------------------------------------------
+function cmpFmt(v, nd) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "–";
+  if (typeof v === "string") return v;
+  const n = Number(v);
+  if (Math.abs(n) >= 1000) return n.toFixed(0);
+  return n.toFixed(nd ?? 2);
+}
+
+function renderDiffTable(title, rows) {
+  if (!rows || !rows.length) return "";
+  const body = rows.map((r) => {
+    const bTxt = r.change
+      ? `${cmpFmt(r.value_b, r.ndigits)}${r.unit ? " " + r.unit : ""} <span class="small">(${r.change})</span>`
+      : `${cmpFmt(r.value_b, r.ndigits)}${r.unit ? " " + r.unit : ""}`;
+    return `<tr><td>${r.label}</td>
+      <td style="text-align:right">${cmpFmt(r.value_a, r.ndigits)}${r.unit ? " " + r.unit : ""}</td>
+      <td style="text-align:right">${bTxt}</td></tr>`;
+  }).join("");
+  return `<div class="diff-group-title">${title}</div>
+    <table class="cmp-table"><thead><tr><th>参数</th><th style="text-align:right">方案 A</th><th style="text-align:right">方案 B</th></tr></thead>
+    <tbody>${body}</tbody></table>`;
+}
+
+function renderCompare(data) {
+  const A = data.plan_a, B = data.plan_b, body = $("compareBody");
+  const head = `<div class="cmp-grid">
+      <div class="cmp-col"><h3>A · #${A.id} ${A.name}</h3>
+        <div class="small">${new Date(A.created_at).toLocaleString()} · 评级 <b>${A.grade}</b></div></div>
+      <div class="cmp-col"><h3 class="b">B · #${B.id} ${B.name}</h3>
+        <div class="small">${new Date(B.created_at).toLocaleString()} · 评级 <b>${B.grade}</b></div></div>
+    </div>`;
+
+  const cond = data.same_conditions
+    ? '<div class="cmp-ok">两方案的转子几何与求解输入一致, 指标差值可视为<b>同条件</b>下的优化对比。</div>'
+    : `<div class="cmp-warn">⚠ 两方案的转子或求解输入不同(<b>${
+        data.differing_groups.map((g) => ({ rotor: "转子参数", solver: "求解输入", tubes: "试管清单" }[g])).join("、")
+      }</b>), 下列指标差值并非同条件优化结果, 请勿直接据差值评判优劣; 参数差异见下。</div>`;
+
+  const metricRows = data.metrics.map((m) => {
+    let dTxt = '<span class="delta-flat">–</span>';
+    if (m.delta_b_minus_a !== null && m.delta_b_minus_a !== undefined) {
+      const d = m.delta_b_minus_a;
+      if (Math.abs(d) < 1e-9) {
+        dTxt = '<span class="delta-flat">0</span>';
+      } else {
+        const cls = d > 0 ? "delta-up" : "delta-down";
+        const sign = d > 0 ? "+" : "−";
+        dTxt = `<span class="${cls}">${sign}${cmpFmt(Math.abs(d), m.ndigits)}${m.unit ? " " + m.unit : ""}</span>`;
+      }
+    }
+    return `<tr><td>${m.label}</td>
+      <td style="text-align:right">${cmpFmt(m.value_a, m.ndigits)}${m.unit ? " " + m.unit : ""}</td>
+      <td style="text-align:right">${cmpFmt(m.value_b, m.ndigits)}${m.unit ? " " + m.unit : ""}</td>
+      <td style="text-align:right">${dTxt}</td></tr>`;
+  }).join("");
+  const metrics = `<h2 style="font-size:13px;margin:12px 0 6px">一阶 / 二阶不平衡量与力学指标(B − A)</h2>
+    <table class="cmp-table">
+      <thead><tr><th>指标</th><th style="text-align:right">方案 A</th><th style="text-align:right">方案 B</th><th style="text-align:right">差值</th></tr></thead>
+      <tbody>${metricRows}</tbody></table>
+    <div class="small" style="margin-top:4px">方向类差值为按角度环绕归一化到 ±180° 的变化量; 其余指标差值为 B 减 A。</div>`;
+
+  const inputDiff = data.same_conditions ? "" : (
+    `<h2 style="font-size:13px;margin:12px 0 4px">参数差异</h2>` +
+    renderDiffTable("转子几何(槽位 / 半径)", data.input_diff.rotor) +
+    renderDiffTable("求解输入(转速 / 权重 / 搜索参数)", data.input_diff.solver) +
+    renderDiffTable("试管清单(增删 / 质量 / 锁定)", data.input_diff.tubes)
+  );
+
+  const stMap = {
+    added: ['新增', 'st-added'], removed: ['移除', 'st-removed'],
+    moved: ['换槽', 'st-moved'], unchanged: ['未变', 'st-unchanged'],
+  };
+  const c = data.placement_counts;
+  const plRows = data.placements.map((r) => {
+    const [stTxt, stCls] = stMap[r.status];
+    const lock = (la, lb) => (la || lb ? ` <span class="pill lock">锁</span>` : "");
+    const slot = (s, ang) => s === null || s === undefined
+      ? '<span class="small">未放置</span>'
+      : `${s} <span class="small">(${cmpFmt(ang, 1)}°)</span>`;
+    return `<tr>
+      <td>${r.tube_id}${lock(r.locked_a, r.locked_b)}</td>
+      <td>${cmpFmt(r.mass_a ?? r.mass_b, 1)}</td>
+      <td>${slot(r.slot_a, r.angle_a)}</td>
+      <td>${slot(r.slot_b, r.angle_b)}</td>
+      <td><span class="status-tag ${stCls}">${stTxt}</span>${r.status === "moved" ? ` <span class="small">${r.slot_a}→${r.slot_b}</span>` : ""}</td>
+    </tr>`;
+  }).join("");
+  const placements = `<h2 style="font-size:13px;margin:12px 0 6px">摆放明细(按试管编号合并)
+      <span class="small">新增 ${c.added} · 移除 ${c.removed} · 换槽 ${c.moved} · 未变 ${c.unchanged}</span></h2>
+    <div class="legend" style="justify-content:flex-start">
+      <span><i style="background:var(--acc2)"></i>新增(B 有 A 无)</span>
+      <span><i style="background:var(--bad)"></i>移除(A 有 B 无)</span>
+      <span><i style="background:var(--warn)"></i>换槽(编号相同槽位不同)</span>
+      <span><i style="background:var(--mut)"></i>未变</span>
+    </div>
+    <table class="cmp-table">
+      <thead><tr><th>试管</th><th>质量(g)</th><th>A 槽位</th><th>B 槽位</th><th>状态</th></tr></thead>
+      <tbody>${plRows}</tbody></table>`;
+
+  body.innerHTML = head + cond + metrics + inputDiff + placements;
+}
+
+$("btnCompare").onclick = async () => {
+  if (historySel.size !== 2) return;
+  const [a, b] = [...historySel];
+  try {
+    const resp = await fetch(`/api/plans/compare?a=${a}&b=${b}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "比较失败");
+    renderCompare(data);
+    $("compareDialog").classList.add("open");
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+$("btnCloseCompare").onclick = () => $("compareDialog").classList.remove("open");
 
 async function loadPlan(id) {
   const resp = await fetch(`/api/plan/${id}`);

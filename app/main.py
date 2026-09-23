@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .balancer import run_plan
+from .compare import compare_plans
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -231,14 +232,17 @@ def list_plans(limit: int = 50) -> dict[str, Any]:
     return {"items": items}
 
 
-@app.get("/api/plan/{plan_id}")
-def get_plan(plan_id: int) -> dict[str, Any]:
+def _load_plan_row(plan_id: int) -> sqlite3.Row:
     with db() as conn:
         row = conn.execute(
             "SELECT * FROM plans WHERE id = ?", (plan_id,)
         ).fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="方案不存在。")
+        raise HTTPException(status_code=404, detail=f"方案 {plan_id} 不存在。")
+    return row
+
+
+def _row_to_plan(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
         "name": row["name"],
@@ -247,6 +251,22 @@ def get_plan(plan_id: int) -> dict[str, Any]:
         "request": json.loads(row["request_json"]),
         "result": json.loads(row["result_json"]),
     }
+
+
+@app.get("/api/plan/{plan_id}")
+def get_plan(plan_id: int) -> dict[str, Any]:
+    return _row_to_plan(_load_plan_row(plan_id))
+
+
+@app.get("/api/plans/compare")
+def compare_saved_plans(a: int, b: int) -> dict[str, Any]:
+    """比较两条已保存方案: 按试管编号合并摆放、并列指标差值、标注参数差异。"""
+    if a == b:
+        raise HTTPException(status_code=400, detail="请选择两条不同的方案进行比较。")
+    # 两次独立取数, 保证两个 404 信息各自准确
+    plan_a = _row_to_plan(_load_plan_row(a))
+    plan_b = _row_to_plan(_load_plan_row(b))
+    return compare_plans(plan_a, plan_b)
 
 
 @app.delete("/api/plan/{plan_id}")
